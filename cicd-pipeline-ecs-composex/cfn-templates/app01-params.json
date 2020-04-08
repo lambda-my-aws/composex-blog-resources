@@ -1,0 +1,26 @@
+[
+  {
+    "ParameterKey": "ArtifactsBucketName",
+    "ParameterValue": "codepipeline-eu-west-1-637670497245"
+  },
+  {
+    "ParameterKey": "DockerComposeRepoName",
+    "ParameterValue": "myapps-compose"
+  },
+  {
+    "ParameterKey": "DockerComposerRepoName",
+    "ParameterValue": "docker-composerx"
+  },
+  {
+    "ParameterKey": "ServiceName",
+    "ParameterValue": "app01"
+  },
+  {
+    "ParameterKey": "AppEcrRepoName",
+    "ParameterValue": "blog-app-01"
+  },
+  {
+    "ParameterKey": "AppVcsRepoName",
+    "ParameterValue": "blog-app-01"
+  }
+]

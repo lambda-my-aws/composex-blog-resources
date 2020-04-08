@@ -1,0 +1,277 @@
+---
+Description: >-
+  Pipeline to release Lambda layers publicly when new release is created
+
+Metadata:
+  Author: https://github.com/johnpreston
+
+Parameters:
+
+  ServiceName:
+    Type: String
+    Description: Name of the service in docker compose
+
+  AppBranchName:
+    Type: String
+    Default: master
+
+  ArtifactsBucketName:
+    Type: String
+
+  AppVcsRepoName:
+    Type: String
+    Description: Name of the VCS Repository
+
+  AppEcrRepoName:
+    Type: String
+    Description: Name of the ECR Repository
+
+  DockerComposeRepoName:
+    Type: String
+    Description: Name of the repository contains the docker compose file
+
+  DockerComposerRepoName:
+    Type: String
+    Description: Name of the repository contains the code for docker-composerx
+
+Resources:
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - !Sub 'codebuild.${AWS::URLSuffix}'
+      Policies:
+        - PolicyName: LambdaLayers-S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - s3:PutObject
+                  - s3:PutObjectVersion
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactsBucketName}/*'
+        - PolicyName: EcrAndCodecommitAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - codecommit:Git*
+                Sid: CodecommitAccessToDockerComposeRepo
+                Resource: !Sub 'arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${DockerComposeRepoName}'
+                Effect: Allow
+              - Action:
+                  - codecommit:GitPull
+                Resource: !Sub 'arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${DockerComposerRepoName}'
+                Sid: CodecommitAccessToDockerComposerRepo
+                Effect: Allow
+              - Sid: EcrImagesAndReposAccess
+                Action:
+                  - ecr:PutImageTagMutability
+                  - ecr:UploadLayerPart
+                  - ecr:ListImages
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeRepositories
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:DescribeImages
+                  - ecr:InitiateLayerUpload
+                  - ecr:GetAuthorizationToken
+                Effect: Allow
+                Resource:
+                  - '*'
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - !Sub 'codepipeline.${AWS::URLSuffix}'
+        Version: '2012-10-17'
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - s3:PutObject
+                  - s3:PutObjectVersion
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactsBucketName}/*'
+        - PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                  - codebuild:Get*
+                  - codebuild:Describe*
+                Effect: Allow
+                Resource:
+                  - !Sub '${ImageBuildProject.Arn}'
+                  - !Sub '${DockerComposeBuildProject.Arn}'
+          PolicyName: CodeBuildProjectAccess
+        - PolicyName: CodecommitAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: AllowReadAndGet
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${AppVcsRepoName}'
+                Action:
+                  - codecommit:Get*
+                  - codecommit:Describe*
+                  - codecommit:GitPull
+                  - codecommit:UploadArchive
+
+  ImageBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      ServiceRole: !GetAtt 'CodeBuildRole.Arn'
+      Description: !Sub 'Builds ${AppVcsRepoName} image'
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:3.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: ECR_REPO_NAME
+            Type: PLAINTEXT
+            Value: !Ref AppEcrRepoName
+          - Name: COMPOSE_REPO_NAME
+            Type: PLAINTEXT
+            Value: !Ref DockerComposeRepoName
+          - Name: IMAGE_BUILD_ARTIFACT_NAME
+            Type: PLAINTEXT
+            Value: ImageBuild
+          - Name: DOCKER_COMPOSER_REPO
+            Type: PLAINTEXT
+            Value: !Ref DockerComposerRepoName
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+
+  DockerComposeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      ServiceRole: !GetAtt 'CodeBuildRole.Arn'
+      Description: !Sub 'Builds docker compose'
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:3.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: ECR_REPO_NAME
+            Type: PLAINTEXT
+            Value: !Ref AppEcrRepoName
+          - Name: COMPOSE_REPO_NAME
+            Type: PLAINTEXT
+            Value: !Ref DockerComposeRepoName
+          - Name: IMAGE_BUILD_ARTIFACT_NAME
+            Type: PLAINTEXT
+            Value: ImageBuild
+          - Name: DOCKER_COMPOSER_REPO
+            Type: PLAINTEXT
+            Value: !Ref DockerComposerRepoName
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec_composex.yml
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref ArtifactsBucketName
+        Type: S3
+      RestartExecutionOnUpdate: true
+      RoleArn: !GetAtt 'CodePipelineRole.Arn'
+      Stages:
+        - Name: SourceCode
+          Actions:
+            - ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              Configuration:
+                BranchName: !Ref AppBranchName
+                PollForSourceChanges: false
+                RepositoryName: !Ref AppVcsRepoName
+              Name: ApplicationSourceCode
+              OutputArtifacts:
+                - Name: AppSourceCode
+              RunOrder: '1'
+        - Name: BuildImage
+          Actions:
+            - ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref ImageBuildProject
+              InputArtifacts:
+                - Name: AppSourceCode
+              Name: BuildApplicationImage
+              OutputArtifacts:
+                - Name: ImageBuild
+              RunOrder: '1'
+        - Name: UpdateComposeFile
+          Actions:
+            - ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref DockerComposeBuildProject
+                PrimarySource: AppSourceCode
+              InputArtifacts:
+                - Name: ImageBuild
+                - Name: AppSourceCode
+              Name: UpdateComposeFile
+              RunOrder: '1'
+
+#  PipelineWebhook:
+#    Type: AWS::CodePipeline::Webhook
+#    Properties:
+#      Authentication: 'UNAUTHENTICATED'
+#      AuthenticationConfiguration: !Ref 'AWS::NoValue'
+#      Filters:
+#        - JsonPath: ".$ref"
+#          MatchEquals: !Sub ".$$refs/heads/${AppBranchName}"
+#      Name: 'NewPR'
+#      TargetAction: SourceCode
+#      TargetPipeline: !Ref Pipeline
+#      TargetPipelineVersion: !GetAtt 'Pipeline.Version'
