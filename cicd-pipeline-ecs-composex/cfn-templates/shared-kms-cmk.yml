@@ -1,0 +1,61 @@
+Description: Template with shared resources for Codepipeline across AWS Accounts
+Parameters:
+  ProdAccountId:
+    Type: String
+    AllowedPattern: '[0-9]{12}'
+  DevAccountId:
+    Type: String
+    AllowedPattern: '[0-9]{12}'
+  SsmParameterPrefixShared:
+    Type: String
+    Default: /cicd/shared
+
+Resources:
+  KmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: pipeline-kms-key
+        Statement:
+          - Sid: Allows admin of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action:
+              - "kms:*"
+            Resource:
+              - "*"
+          - Sid: AllowKeyAccessFromExternalAccounts
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${DevAccountId}:root"
+                - !Sub "arn:aws:iam::${ProdAccountId}:root"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource:
+              - "*"
+  KmsAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/codepipeline-crossaccounts
+      TargetKeyId: !Ref KmsKey
+
+  KmsKeyArnInSsm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '${SsmParameterPrefixShared}/kms/arn'
+      Value: !GetAtt 'KmsKey.Arn'
+      Type: String
+
+Outputs:
+  KmsKeyArn:
+    Value: !GetAtt 'KmsKey.Arn'
+    Export:
+      Name: !Sub '${AWS::StackName}-KMS-KeyArn'

@@ -9,6 +9,9 @@ __pycache__/
 #EMACS TMP
 *~
 
+*.params.json
+
+
 OUTPUTS
 outputs/*.json
 outputs/*.yml

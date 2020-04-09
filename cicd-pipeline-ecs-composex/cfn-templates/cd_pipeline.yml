@@ -3,65 +3,36 @@ Description: >-
   Pipeline to release Lambda layers publicly when new release is created
 
 Metadata:
-  Version: '2019-05-31'
-  Author: John Mille john@lambda-my-aws.io
-  Licence: Apache 2.0
+  Author: https://github.com/johnpreston
 
 Parameters:
-  LayerName:
-    Type: String
-    Default: ozone
   ArtifactsBucketName:
-    Type: String
-  GitHubOAuthToken:
-    Type: String
-    NoEcho: true
-  PypiUsername:
-    Type: String
-  BranchName:
-    Type: String
-    Default: master
-  CreateArtifactsBucket:
-    Type: String
-    Default: False
-    AllowedValues:
-      - False
-      - True
-    Description: Whether or not create the Artifacts Bucket
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /cicd/shared/s3/artifacts/name
+
+  CfnTemplatesBucketName:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /cicd/shared/s3/templates/name
+
   DevAccountCloudFormationRoleArn:
     Type: String
 
   ProdAccountCloudFormationRoleArn:
     Type: String
 
-Conditions:
-  CreateArtifactsBucketCondition:
-    Fn::Equals:
-      - !Ref CreateArtifactsBucket
-      - True
+  ComposeRepositoryName:
+    Type: String
+    Description: Name of VCS repo for the Docker composeX file
+
+  BranchName:
+    Type: String
+    Default: master
+
+  KmsKeyArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /cicd/shared/kms/arn
 
 Resources:
-  ArtifactsBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub '${ArtifactsBucketName}.${AWS::Region}'
-    Condition: CreateArtifactsBucketCondition
-    DeletionPolicy: Retain
-  CloudformationRole:
-    Type: AWS::IAM::Role
-    Properties:
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/PowerUserAccess
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Action:
-              - sts:AssumeRole
-            Effect: Allow
-            Principal:
-              Service:
-                - !Sub 'cloudformation.${AWS::URLSuffix}'
-
   CodeBuildRole:
     Type: AWS::IAM::Role
     Properties:
@@ -77,9 +48,17 @@ Resources:
               Service:
                 - !Sub 'codebuild.${AWS::URLSuffix}'
       Policies:
-        - PolicyDocument:
+        - PolicyName: EcsComposeXAccess
+          PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              - Sid: Ec2BasicReads
+                Effect: Allow
+                Resource:
+                  - '*'
+                Action:
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeRegion*
               - Action:
                   - s3:PutObject
                   - s3:PutObjectVersion
@@ -87,8 +66,21 @@ Resources:
                   - s3:GetObjectVersion
                 Effect: Allow
                 Resource:
-                  - !Sub '${ArtifactsBucket.Arn}/*'
-          PolicyName: LambdaLayers-CodeBuild
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactsBucketName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnTemplatesBucketName}/*'
+              - Sid: EcsComposeXOtherS3Access
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnTemplatesBucketName}'
+                NotAction:
+                  - s3:DeleteBucket
+                Effect: Allow
+              - Sid: CloudFormationActions
+                Effect: Allow
+                Resource: '*'
+                Action:
+                  - cloudformation:Describe*
+                  - cloudformation:Get*
+                  - cloudformation:Validate*
         - PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -98,8 +90,24 @@ Resources:
                 Effect: Allow
                 Resource:
                   - '*'
-          PolicyName: LambdaLayers-S3Access
+          PolicyName: CodeBuildSelfAccessForAutomationTricks0
+        - PolicyName: KmsAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: DecryptEncryptArtifacts
+                Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:ReEncrypt*
+                  - kms:Decrypt
+                Resource:
+                  - !Ref KmsKeyArn
+
   CodePipelineRole:
+    Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
         Statement:
@@ -121,18 +129,34 @@ Resources:
                   - s3:GetObjectVersion
                 Effect: Allow
                 Resource:
-                  - !Sub '${ArtifactsBucket.Arn}/*'
-          PolicyName: LambdaLayers-S3Access
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactsBucketName}/*'
+          PolicyName: S3Access
+        - PolicyName: CodecommitAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: AllowReadAndGet
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${ComposeRepositoryName}'
+                Action:
+                  - codecommit:Get*
+                  - codecommit:Describe*
+                  - codecommit:GitPull
+                  - codecommit:UploadArchive
         - PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Action:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
+                  - codebuild:Get*
+                  - codebuild:Describe*
                 Effect: Allow
                 Resource: '*'
-          PolicyName: LambdaLayers-CodeBuildAccess
-        - PolicyDocument:
+          PolicyName: CodeBuildAccess
+        - PolicyName: AccessForCloudFormation
+          PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Action:
@@ -142,7 +166,10 @@ Resources:
                     iam:PassedToService:
                       - !Sub 'cloudformation.${AWS::URLSuffix}'
                 Effect: Allow
-                Resource: '*'
+                Resource:
+                  - !Ref DevAccountCloudFormationRoleArn
+                  - !Ref ProdAccountCloudFormationRoleArn
+                Sid: AllowsPipelineToPassRoleToCfn
               - Action:
                   - cloudformation:CreateStack
                   - cloudformation:DeleteStack
@@ -156,59 +183,47 @@ Resources:
                   - cloudformation:ValidateTemplate
                 Effect: Allow
                 Resource: '*'
-          PolicyName: LambdaLayers-PassRole
-        - PolicyDocument:
-            Version: '2012-10-17'
+                Sid: AllowsCloudFormationAccess
+        - PolicyName: KmsAccess
+          PolicyDocument:
+            Version: 2012-10-17
             Statement:
-              - Action:
-                  - lambda:Invoke
-                  - lambda:InvokeFunction
-                  - lambda:List*
-                  - lambda:Get*
+              - Sid: DecryptEncryptArtifacts
                 Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:ReEncrypt*
+                  - kms:Decrypt
                 Resource:
-                  - '*'
-          PolicyName: Pipeline-LambdaAccess
-    Type: AWS::IAM::Role
-  PypiReleaseProject:
+                  - !Ref KmsKeyArn
+
+  EcsComposeXGenerate:
     Type: AWS::CodeBuild::Project
     Properties:
       Artifacts:
         Type: CODEPIPELINE
       ServiceRole: !GetAtt 'CodeBuildRole.Arn'
-      Description: !Sub 'Builds Pypi release for ${LayerName} in python3.7'
+      Description: !Sub 'Generates CFN template from ${ComposeRepositoryName}'
       Environment:
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:2.0
+        Image: aws/codebuild/standard:3.0
         Type: LINUX_CONTAINER
         EnvironmentVariables:
-          - Name: PYPI_USERNAME
-            Type: PARAMETER_STORE
-            Value: !Ref SsmPypiUsername
-          - Name: PYPI_PASSWORD
-            Type: PARAMETER_STORE
-            Value: '/codebuild/pypi/password'
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec_pypi.yml
-  Python37Build:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Artifacts:
-        Type: CODEPIPELINE
-      ServiceRole: !GetAtt 'CodeBuildRole.Arn'
-      Description: !Sub 'Builds layer for ${LayerName} in python3.7'
-      Environment:
-        ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:2.0
-        Type: LINUX_CONTAINER
+          - Name: CFN_TPL_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref CfnTemplatesBucketName
       Source:
         Type: CODEPIPELINE
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
       ArtifactStore:
-        Location: !Ref ArtifactsBucket
+        Location: !Ref ArtifactsBucketName
+        EncryptionKey:
+          Id: !Ref KmsKeyArn
+          Type: KMS
         Type: S3
       RestartExecutionOnUpdate: true
       RoleArn: !GetAtt 'CodePipelineRole.Arn'
@@ -216,47 +231,35 @@ Resources:
         - Actions:
             - ActionTypeId:
                 Category: Source
-                Owner: ThirdParty
-                Provider: GitHub
+                Owner: AWS
+                Provider: CodeCommit
                 Version: '1'
               Configuration:
-                Branch: !Ref BranchName
-                OAuthToken: !Ref 'GitHubOAuthToken'
-                Owner: lambda-my-aws
+                BranchName: !Ref BranchName
                 PollForSourceChanges: false
-                Repo: ozone
-              Name: SourceCode
+                RepositoryName: !Ref ComposeRepositoryName
+              Name: DockerComposeSource
               OutputArtifacts:
-                - Name: SourceCode
+                - Name: DockerComposeSource
               RunOrder: '1'
-          Name: SourceCode
-        - Actions:
+          Name: PipelineSource
+        - Name: !Sub 'GenerateCfnTemplates'
+          Actions:
             - ActionTypeId:
                 Category: Build
                 Owner: AWS
                 Provider: CodeBuild
                 Version: '1'
               Configuration:
-                ProjectName: !Ref Python37Build
+                ProjectName: !Ref EcsComposeXGenerate
               InputArtifacts:
-                - Name: SourceCode
-              Name: !Ref Python37Build
+                - Name: DockerComposeSource
+              Name: EcsComposeX
               OutputArtifacts:
-                - Name: LayerBuild
-              RunOrder: '2'
-            - ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: '1'
-              Configuration:
-                ProjectName: !Ref PypiReleaseProject
-              InputArtifacts:
-                - Name: SourceCode
-              Name: !Ref PypiReleaseProject
+                - Name: ComposeXOutput
               RunOrder: '1'
-          Name: !Sub 'Build-${LayerName}'
-        - Actions:
+        - Name: !Sub 'DeployToDev'
+          Actions:
             - ActionTypeId:
                 Category: Deploy
                 Owner: AWS
@@ -264,29 +267,27 @@ Resources:
                 Version: '1'
               Configuration:
                 ActionMode: CREATE_UPDATE
-                RoleArn: !GetAtt 'CloudformationRole.Arn'
-                StackName: !Sub 'lambdalayer-${LayerName}'
-                TemplatePath: !Sub 'LayerBuild::cfn/${LayerName}/layer_template.yml'
-                TemplateConfiguration: !Sub 'LayerBuild::cfn/${LayerName}/layer_config.json'
-                Capabilities: 'CAPABILITY_AUTO_EXPAND'
+                RoleArn: !Ref DevAccountCloudFormationRoleArn
+                StackName: !Sub 'dev'
+                TemplatePath: !Sub 'ComposeXOutput::composex_root.yml'
+#                TemplateConfiguration: !Sub 'ComposeXOutput::composex_root.params.json'
+                Capabilities: 'CAPABILITY_AUTO_EXPAND,CAPABILITY_IAM'
               InputArtifacts:
-                - Name: LayerBuild
-              Name: DeployLayer
+                - Name: ComposeXOutput
+              OutputArtifacts:
+                - Name: DevStackOutputs
+              Name: DeployToDev
               RunOrder: '1'
-          Name: !Sub 'Release-${LayerName}'
-  PipelineWebhook:
-    Type: AWS::CodePipeline::Webhook
-    Properties:
-      Authentication: 'GITHUB_HMAC'
-      AuthenticationConfiguration:
-        SecretToken: !Ref 'GitHubOAuthToken'
-      Filters:
-        - JsonPath: ".$ref"
-          MatchEquals: ".$refs/tags/*"
-        - JsonPath: ".$ref"
-          MatchEquals: !Sub ".$$refs/heads/${BranchName}"
-      Name: 'NewTagPushed'
-      RegisterWithThirdParty: True
-      TargetAction: SourceCode
-      TargetPipeline: !Ref Pipeline
-      TargetPipelineVersion: !GetAtt 'Pipeline.Version'
+        - Name: !Sub 'DestroyDev'
+          Actions:
+            - ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: DELETE_ONLY
+                RoleArn: !Ref DevAccountCloudFormationRoleArn
+                StackName: !Sub 'dev'
+              Name: DeployToDev
+              RunOrder: '1'

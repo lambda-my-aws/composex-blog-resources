@@ -1,9 +1,5 @@
 [
   {
-    "ParameterKey": "ArtifactsBucketName",
-    "ParameterValue": "codepipeline-eu-west-1-637670497245"
-  },
-  {
     "ParameterKey": "DockerComposeRepoName",
     "ParameterValue": "myapps-compose"
   },

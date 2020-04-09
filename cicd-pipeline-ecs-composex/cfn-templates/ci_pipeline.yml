@@ -6,7 +6,6 @@ Metadata:
   Author: https://github.com/johnpreston
 
 Parameters:
-
   ServiceName:
     Type: String
     Description: Name of the service in docker compose
@@ -16,7 +15,8 @@ Parameters:
     Default: master
 
   ArtifactsBucketName:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /cicd/shared/s3/artifacts/name
 
   AppVcsRepoName:
     Type: String
@@ -33,6 +33,10 @@ Parameters:
   DockerComposerRepoName:
     Type: String
     Description: Name of the repository contains the code for docker-composerx
+
+  KmsKeyArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /cicd/shared/kms/arn
 
 Resources:
   CodeBuildRole:
@@ -55,10 +59,8 @@ Resources:
             Version: '2012-10-17'
             Statement:
               - Action:
-                  - s3:PutObject
-                  - s3:PutObjectVersion
-                  - s3:GetObject
-                  - s3:GetObjectVersion
+                  - s3:PutObject*
+                  - s3:GetObject*
                 Effect: Allow
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactsBucketName}/*'
@@ -93,6 +95,21 @@ Resources:
                 Effect: Allow
                 Resource:
                   - '*'
+        - PolicyName: KmsAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: DecryptEncryptArtifacts
+                Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:ReEncrypt*
+                  - kms:Decrypt
+                Resource:
+                  - !Ref KmsKeyArn
+
   CodePipelineRole:
     Type: AWS::IAM::Role
     Properties:
@@ -111,10 +128,8 @@ Resources:
             Version: '2012-10-17'
             Statement:
               - Action:
-                  - s3:PutObject
-                  - s3:PutObjectVersion
-                  - s3:GetObject
-                  - s3:GetObjectVersion
+                  - s3:PutObject*
+                  - s3:GetObject*
                 Effect: Allow
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactsBucketName}/*'
@@ -144,7 +159,20 @@ Resources:
                   - codecommit:Describe*
                   - codecommit:GitPull
                   - codecommit:UploadArchive
-
+        - PolicyName: KmsAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: DecryptEncryptArtifacts
+                Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:ReEncrypt*
+                  - kms:Decrypt
+                Resource:
+                  - !Ref KmsKeyArn
   ImageBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -213,6 +241,9 @@ Resources:
     Properties:
       ArtifactStore:
         Location: !Ref ArtifactsBucketName
+        EncryptionKey:
+          Id: !Ref KmsKeyArn
+          Type: KMS
         Type: S3
       RestartExecutionOnUpdate: true
       RoleArn: !GetAtt 'CodePipelineRole.Arn'
@@ -262,16 +293,3 @@ Resources:
                 - Name: AppSourceCode
               Name: UpdateComposeFile
               RunOrder: '1'
-
-#  PipelineWebhook:
-#    Type: AWS::CodePipeline::Webhook
-#    Properties:
-#      Authentication: 'UNAUTHENTICATED'
-#      AuthenticationConfiguration: !Ref 'AWS::NoValue'
-#      Filters:
-#        - JsonPath: ".$ref"
-#          MatchEquals: !Sub ".$$refs/heads/${AppBranchName}"
-#      Name: 'NewPR'
-#      TargetAction: SourceCode
-#      TargetPipeline: !Ref Pipeline
-#      TargetPipelineVersion: !GetAtt 'Pipeline.Version'

@@ -1,0 +1,168 @@
+Description: Template with shared resources for Codepipeline across AWS Accounts
+Parameters:
+  ProdAccountPipelineRoleId:
+    Type: String
+    Default: <none>
+  ProdAccountCfnRoleId:
+    Type: String
+    Default: <none>
+  DevAccountPipelineRoleId:
+    Type: String
+    Default: <none>
+  DevAccountCfnRoleId:
+    Type: String
+    Default: <none>
+  ArtifactsBucketPrefix:
+    Type: String
+    Default: codepipeline
+    Description: Prefix for the s3 bucket storing CodePipeline artifacts
+    AllowedPattern: '[a-z0-9-.]+'
+  TemplatesBucketPrefix:
+    Type: String
+    Default: cfn-templates
+    Description: Prefix for the s3 bucket storing CloudFormation templates
+    AllowedPattern: '[a-z0-9-.]+'
+  SsmParameterPrefixShared:
+    Type: String
+    Default: /cicd/shared
+
+Conditions:
+  NoProdAccountRoleId:
+    Fn::Equals:
+      - !Ref ProdAccountPipelineRoleId
+      - '<none>'
+  NoDevAccountRoleId:
+    Fn::Equals:
+      - !Ref DevAccountPipelineRoleId
+      - '<none>'
+
+  NoDevAccountCfnRoleId:
+    Fn::Equals:
+      - !Ref DevAccountCfnRoleId
+      - '<none>'
+
+  NoProdAccountCfnRoleId:
+    Fn::Equals:
+      - !Ref ProdAccountCfnRoleId
+      - '<none>'
+  CreateBucketPolicyCondition:
+    Fn::And:
+      - Fn::Not:
+        - !Condition NoProdAccountRoleId
+      - Fn::Not:
+        - !Condition NoDevAccountRoleId
+      - Fn::Not:
+        - !Condition NoDevAccountCfnRoleId
+      - Fn::Not:
+        - !Condition NoProdAccountCfnRoleId
+
+Resources:
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${ArtifactsBucketPrefix}.${AWS::AccountId}.${AWS::Region}'
+
+  ArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateBucketPolicyCondition
+    Properties:
+      Bucket: !Ref ArtifactsBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Resource:
+              - !Sub '${ArtifactsBucket.Arn}/*'
+            Action:
+              - 's3:*'
+            Principal: '*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Effect: Allow
+            Resource: !Sub '${ArtifactsBucket.Arn}/*'
+            Action:
+              - s3:GetObject*
+              - s3:PutObject*
+            Principal:
+              AWS:
+                - !Ref ProdAccountPipelineRoleId
+                - !Ref DevAccountPipelineRoleId
+                - !Ref ProdAccountCfnRoleId
+                - !Ref DevAccountCfnRoleId
+          - Effect: Allow
+            Resource: !Sub '${ArtifactsBucket.Arn}'
+            Action:
+              - s3:ListBucket
+            Principal:
+              AWS:
+                - !Ref ProdAccountPipelineRoleId
+                - !Ref DevAccountPipelineRoleId
+                - !Ref ProdAccountCfnRoleId
+                - !Ref DevAccountCfnRoleId
+
+  CloudformationTemplatesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${TemplatesBucketPrefix}.${AWS::AccountId}.${AWS::Region}'
+
+  CloudFormationBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateBucketPolicyCondition
+    Properties:
+      Bucket: !Ref CloudformationTemplatesBucket
+      PolicyDocument:
+        Id: Policy1553183091390
+        Version: 2012-10-17
+        Statement:
+          - Effect: Deny
+            Resource:
+              - !Sub '${CloudformationTemplatesBucket.Arn}/*'
+            Action:
+              - 's3:*'
+            Principal: '*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Action:
+              - s3:GetObject*
+            Effect: Allow
+            Resource:
+              - !Sub '${CloudformationTemplatesBucket.Arn}/*'
+            Principal:
+              AWS:
+                - !Ref ProdAccountPipelineRoleId
+                - !Ref DevAccountPipelineRoleId
+                - !Ref ProdAccountCfnRoleId
+                - !Ref DevAccountCfnRoleId
+          - Action:
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - !Sub '${CloudformationTemplatesBucket.Arn}'
+            Principal:
+              AWS:
+                - !Ref ProdAccountPipelineRoleId
+                - !Ref DevAccountPipelineRoleId
+                - !Ref DevAccountCfnRoleId
+                - !Ref ProdAccountCfnRoleId
+
+  ArtifactsBucketSssm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '${SsmParameterPrefixShared}/s3/artifacts/name'
+      Value: !Ref ArtifactsBucket
+      Type: String
+  TemplateBucketSssm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '${SsmParameterPrefixShared}/s3/templates/name'
+      Value: !Ref ArtifactsBucket
+      Type: String
+
+Outputs:
+  ArtifactsBucket:
+    Value: !Ref ArtifactsBucket
+  CloudformationTemplatesBucket:
+    Value: !Ref CloudformationTemplatesBucket
