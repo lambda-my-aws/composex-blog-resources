@@ -191,6 +191,20 @@ Resources:
                   - kms:Decrypt
                 Resource:
                   - !Ref KmsKeyArn
+        - PolicyName: SNSPublish
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Ref ApprovalTopic
+
+  ApprovalTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub '${AWS::StackName}Approval'
 
   EcsComposeXGenerate:
     Type: AWS::CodeBuild::Project
@@ -263,7 +277,7 @@ Resources:
                 ActionMode: CREATE_UPDATE
                 RoleArn: !Ref DevAccountCfnRoleArn
                 StackName: !Sub 'dev'
-                TemplatePath: !Sub 'ComposeXOutput::composex_root.yml'
+                TemplatePath: !Sub 'ComposeXOutput::composex_dev.yml'
 #                TemplateConfiguration: !Sub 'ComposeXOutput::composex_root.params.json'
                 Capabilities: 'CAPABILITY_AUTO_EXPAND,CAPABILITY_IAM'
               InputArtifacts:
@@ -286,3 +300,35 @@ Resources:
               Name: DeployToDev
               RunOrder: '1'
               RoleArn: !Ref DevAccountPipelineRoleArn
+        - Name: !Sub 'ApproveToProd'
+          Actions:
+            - ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                NotificationArn: !Ref 'ApprovalTopic'
+              Name: RequestApproval
+        - Name: !Sub 'DeployToProd'
+          Actions:
+            - Name: DeployToProd
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !Ref ProdAccountCfnRoleArn
+                StackName: !Sub 'production'
+                TemplatePath: !Sub 'ComposeXOutput::composex_prod.yml'
+                TemplateConfiguration: !Sub 'DockerComposeSource::prod-configuration.json'
+                Capabilities: 'CAPABILITY_AUTO_EXPAND,CAPABILITY_IAM'
+              InputArtifacts:
+                - Name: ComposeXOutput
+                - Name: DockerComposeSource
+              OutputArtifacts:
+                - Name: ProdStackOutput
+              RunOrder: '1'
+              RoleArn: !Ref ProdAccountPipelineRoleArn
